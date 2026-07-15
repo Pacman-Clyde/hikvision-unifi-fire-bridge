@@ -108,6 +108,11 @@ curl --digest --user 'fire-bridge:PASSWORD' --no-buffer \
 
 If yours differs from the defaults, set `FIRE_EVENT_TYPES` — no rebuild needed.
 
+The bridge also self-reports misconfiguration: every event type it sees that
+does **not** match `FIRE_EVENT_TYPES` appears in the `unmatched_event_types`
+list on `/status` (and is logged once). If your camera's fire type is wrong in
+the config, it shows up there instead of failing silently.
+
 ## Verifying the Protect webhook
 
 Protect UI and API paths can move between versions. Test yours directly:

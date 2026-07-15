@@ -31,11 +31,23 @@ pub struct HealthSnapshot {
     pub camera_error: Option<String>,
     pub camera_reconnects: u64,
     pub malformed_frames: u64,
-    pub dropped_events: u64,
+    /// Camera events lost before the state machine saw them (queue full).
+    /// Dangerous — a fire edge could be among them. Alarm on this.
+    pub camera_events_dropped: u64,
+    /// Decided alerts lost between state machine and delivery worker.
+    /// Recoverable via re-alerting, but still a delivery failure.
+    pub alerts_dropped: u64,
+    /// Unique `eventType` values seen that did not match FIRE_EVENT_TYPES
+    /// (capped list). If your camera's fire type is missing from the
+    /// configuration, it shows up here instead of vanishing silently.
+    pub unmatched_event_types: Vec<String>,
     // Alerting.
     pub alerts_sent: u64,
     pub last_alert_unix: Option<u64>,
     // Protect delivery path.
+    /// False until the first successful real delivery: the probe cannot
+    /// validate the webhook ID or API key without triggering the alarm.
+    pub webhook_verified: bool,
     pub webhook_successes: u64,
     pub webhook_last_success_unix: Option<u64>,
     pub webhook_failures: u64,
@@ -102,8 +114,28 @@ impl Health {
         self.inner.write().await.malformed_frames += 1;
     }
 
-    pub async fn dropped_event(&self) {
-        self.inner.write().await.dropped_events += 1;
+    pub async fn camera_event_dropped(&self) {
+        self.inner.write().await.camera_events_dropped += 1;
+    }
+
+    pub async fn alert_dropped(&self) {
+        self.inner.write().await.alerts_dropped += 1;
+    }
+
+    /// Record an event type that did not match the fire matcher. Returns
+    /// `true` when the type is new (first sighting — worth a WARN log).
+    pub async fn unmatched_event_type(&self, event_type: &str) -> bool {
+        const MAX_TRACKED: usize = 32;
+        let mut s = self.inner.write().await;
+        if s.unmatched_event_types.iter().any(|t| t == event_type) {
+            return false;
+        }
+        if s.unmatched_event_types.len() < MAX_TRACKED {
+            s.unmatched_event_types.push(event_type.to_owned());
+            true
+        } else {
+            false
+        }
     }
 
     pub async fn alert_sent(&self) {
@@ -114,6 +146,7 @@ impl Health {
 
     pub async fn webhook_success(&self) {
         let mut s = self.inner.write().await;
+        s.webhook_verified = true;
         s.webhook_successes += 1;
         s.webhook_last_success_unix = Some(unix_now());
         s.webhook_error = None;
@@ -254,14 +287,44 @@ mod tests {
             health.camera_disconnected(Some("boom".into())).await;
             health.camera_disconnected(None).await;
             health.malformed_frame().await;
-            health.dropped_event().await;
+            health.camera_event_dropped().await;
+            health.alert_dropped().await;
             health.alert_sent().await;
             let s = health.snapshot().await;
             assert_eq!(s.camera_reconnects, 2);
             assert_eq!(s.malformed_frames, 1);
-            assert_eq!(s.dropped_events, 1);
+            assert_eq!(s.camera_events_dropped, 1);
+            assert_eq!(s.alerts_dropped, 1);
             assert_eq!(s.alerts_sent, 1);
             assert_eq!(s.camera_error.as_deref(), Some("boom"));
+        });
+    }
+
+    #[test]
+    fn unmatched_event_types_are_tracked_once_each_and_capped() {
+        let health = Health::new(false);
+        futures_blocking(async {
+            assert!(health.unmatched_event_type("videoloss").await);
+            assert!(!health.unmatched_event_type("videoloss").await);
+            assert!(health.unmatched_event_type("thermaldetection").await);
+            for i in 0..64 {
+                health.unmatched_event_type(&format!("type{i}")).await;
+            }
+            let s = health.snapshot().await;
+            assert!(s.unmatched_event_types.len() <= 32, "list must be capped");
+            assert!(s.unmatched_event_types.contains(&"videoloss".to_owned()));
+        });
+    }
+
+    #[test]
+    fn webhook_verified_only_after_first_delivery() {
+        let health = Health::new(false);
+        futures_blocking(async {
+            assert!(!health.snapshot().await.webhook_verified);
+            health.webhook_failure("boom".into()).await;
+            assert!(!health.snapshot().await.webhook_verified);
+            health.webhook_success().await;
+            assert!(health.snapshot().await.webhook_verified);
         });
     }
 

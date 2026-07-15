@@ -14,6 +14,11 @@ use quick_xml::events::Event;
 pub enum EventState {
     Active,
     Inactive,
+    /// The document had an `eventType` but no `eventState` element. Some
+    /// firmwares emit presence-based events where the document existing *is*
+    /// the alarm — the processor treats a fire-matching type without state as
+    /// active (fail toward alert, never silent drop).
+    Missing,
     Unknown(String),
 }
 
@@ -37,7 +42,9 @@ pub struct CameraEvent {
 }
 
 /// Parse one complete XML document. Returns `Ok(None)` when the document is
-/// well-formed but is not an event notification (no `eventType`/`eventState`).
+/// well-formed but is not an event notification (no `eventType` at all). A
+/// missing `eventState` yields [`EventState::Missing`] rather than dropping
+/// the document — the caller decides how to fail safe.
 pub fn parse_event(xml: &[u8]) -> Result<Option<CameraEvent>> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().trim_text(true);
@@ -76,14 +83,13 @@ pub fn parse_event(xml: &[u8]) -> Result<Option<CameraEvent>> {
         }
     }
 
-    Ok(match (event_type, event_state) {
-        (Some(event_type), Some(state)) => Some(CameraEvent {
-            event_type,
-            state: EventState::parse(&state),
-            channel,
-        }),
-        _ => None,
-    })
+    Ok(event_type.map(|event_type| CameraEvent {
+        event_type,
+        state: event_state
+            .map(|s| EventState::parse(&s))
+            .unwrap_or(EventState::Missing),
+        channel,
+    }))
 }
 
 fn assign(
@@ -193,6 +199,23 @@ mod tests {
         let parsed =
             parse_event(b"<EventNotificationAlert><foo>1</foo></EventNotificationAlert>").unwrap();
         assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn event_type_without_state_yields_missing_state_not_a_drop() {
+        // Presence-based events must not vanish: the processor fails toward
+        // alert for fire-matching types.
+        let event = parse_event(
+            br#"<EventNotificationAlert>
+                <eventType>fireDetection</eventType>
+                <channelID>2</channelID>
+            </EventNotificationAlert>"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(event.event_type, "fireDetection");
+        assert_eq!(event.state, EventState::Missing);
+        assert_eq!(event.channel.as_deref(), Some("2"));
     }
 
     #[test]

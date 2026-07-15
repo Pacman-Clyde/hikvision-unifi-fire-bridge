@@ -109,9 +109,22 @@ impl Config {
             None => {
                 let base = Url::parse(&required("PROTECT_BASE_URL")?)
                     .context("PROTECT_BASE_URL is not a valid URL")?;
+                let webhook_id = required("PROTECT_WEBHOOK_ID")?;
+                // The ID lands in a URL path: restrict its alphabet so a
+                // value like `../..` cannot be path-normalised into a
+                // different endpoint. Use PROTECT_WEBHOOK_URL for exotic
+                // Protect paths instead.
+                if !webhook_id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                {
+                    bail!(
+                        "PROTECT_WEBHOOK_ID may contain only letters, digits, '-' and '_' \
+                         (set PROTECT_WEBHOOK_URL for a full custom URL)"
+                    );
+                }
                 base.join(&format!(
-                    "/proxy/protect/integration/v1/alarm-manager/webhook/{}",
-                    required("PROTECT_WEBHOOK_ID")?
+                    "/proxy/protect/integration/v1/alarm-manager/webhook/{webhook_id}"
                 ))
                 .context("could not build webhook URL from PROTECT_BASE_URL")?
             }
@@ -166,6 +179,11 @@ impl Config {
         let reconnect_max = seconds("RECONNECT_MAX_SECONDS", 30)?;
         if reconnect_initial.is_zero() || reconnect_max < reconnect_initial {
             bail!("RECONNECT_MAX_SECONDS must be >= RECONNECT_INITIAL_SECONDS >= 1");
+        }
+        if reconnect_max > Duration::from_secs(3600) {
+            // An accidental huge ceiling would leave the camera path down for
+            // hours after a burst of failures.
+            bail!("RECONNECT_MAX_SECONDS must be at most 3600");
         }
 
         Ok(Self {
@@ -413,6 +431,25 @@ mod tests {
             let err = format!("{:#}", Config::from_map(&vars).unwrap_err());
             assert!(err.contains(name), "{name}: err={err}");
         }
+    }
+
+    #[test]
+    fn webhook_id_alphabet_is_restricted() {
+        for bad in ["../../secret", "a/b", "id with space", "id%2e%2e"] {
+            let mut vars = base_vars();
+            vars.insert("PROTECT_WEBHOOK_ID".into(), bad.into());
+            assert!(Config::from_map(&vars).is_err(), "must reject {bad:?}");
+        }
+        let mut vars = base_vars();
+        vars.insert("PROTECT_WEBHOOK_ID".into(), "aB3-_x".into());
+        assert!(Config::from_map(&vars).is_ok());
+    }
+
+    #[test]
+    fn reconnect_ceiling_is_capped() {
+        let mut vars = base_vars();
+        vars.insert("RECONNECT_MAX_SECONDS".into(), "86400".into());
+        assert!(Config::from_map(&vars).is_err());
     }
 
     #[test]

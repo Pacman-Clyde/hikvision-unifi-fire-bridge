@@ -125,6 +125,8 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
     let outcome = tokio::select! {
         _ = cancel.cancelled() => Ok(()),
         joined = tasks.join_next() => match joined {
+            // A task finishing during a requested shutdown is not a failure.
+            _ if cancel.is_cancelled() => Ok(()),
             Some(Ok((name, result))) => {
                 bail!("critical task '{name}' exited unexpectedly: {result:?}")
             }
@@ -134,7 +136,12 @@ pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
     };
 
     cancel.cancel();
-    while tasks.join_next().await.is_some() {}
+    // Bounded drain: a monitoring client holding a health connection open
+    // must not delay process exit into the container's SIGKILL window.
+    let drain = async { while tasks.join_next().await.is_some() {} };
+    if timeout(Duration::from_secs(10), drain).await.is_err() {
+        warn!("tasks did not drain within 10s; exiting anyway");
+    }
     info!("bridge stopped");
     outcome
 }
@@ -164,11 +171,28 @@ async fn process_events(
             StreamItem::Reset => tracker.on_stream_reset(),
             StreamItem::Event(event) => {
                 if !cfg.fire_matcher.matches(&event.event_type) {
+                    // Never a silent drop: an operator whose camera emits an
+                    // unexpected fire type must be able to see it in /status
+                    // (and once per type in the logs) instead of losing every
+                    // alarm invisibly.
+                    if health.unmatched_event_type(&event.event_type).await {
+                        warn!(
+                            event_type = %event.event_type,
+                            "camera emitted an eventType not matched by FIRE_EVENT_TYPES; \
+                             if this is your fire event, add it to FIRE_EVENT_TYPES"
+                        );
+                    }
                     continue;
                 }
                 let source = event.channel.unwrap_or_else(|| "default".into());
                 match event.state {
-                    EventState::Active => {
+                    // A fire-matching document without an eventState is
+                    // treated as active: fail toward alert, never drop.
+                    EventState::Active | EventState::Missing => {
+                        if event.state == EventState::Missing {
+                            warn!(%source, event_type = %event.event_type,
+                                "fire event without eventState; treating as active");
+                        }
                         if let Some(alert) = tracker.on_active(&source, Instant::now()) {
                             info!(%source, ?alert, event_type = %event.event_type, "fire alert raised");
                             let request = AlarmRequest { source, alert };
@@ -180,7 +204,7 @@ async fn process_events(
                                     // `active` notifications will re-raise),
                                     // but a lost alert must latch /readyz
                                     // unready — this is a delivery failure.
-                                    health.dropped_event().await;
+                                    health.alert_dropped().await;
                                     health
                                         .webhook_failure(
                                             "alarm queue unavailable; alert not enqueued".into(),

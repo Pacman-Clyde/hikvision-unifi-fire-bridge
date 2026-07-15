@@ -65,9 +65,30 @@ impl FireTracker {
         }
     }
 
+    /// Upper bound on tracked sources. A real device has a handful of
+    /// channels; a buggy or malicious camera inventing unique channel IDs
+    /// must not grow memory without limit.
+    const MAX_SOURCES: usize = 1024;
+
     /// Handle an `active` fire notification for `source`.
     pub fn on_active(&mut self, source: &str, now: Instant) -> Option<Alert> {
-        let state = self.sources.entry(source.to_owned()).or_default();
+        if self.sources.len() >= Self::MAX_SOURCES && !self.sources.contains_key(source) {
+            // Evict expired, non-pending sources; if everything is live the
+            // new source falls back to the shared overflow slot so alerts
+            // still fire (rate-limited) rather than being ignored.
+            let ttl = self.cfg.active_ttl;
+            self.sources.retain(|_, s| {
+                s.pending_edge
+                    || s.last_active_msg
+                        .is_some_and(|t| now.duration_since(t) <= ttl)
+            });
+        }
+        let key = if self.sources.len() >= Self::MAX_SOURCES && !self.sources.contains_key(source) {
+            "overflow"
+        } else {
+            source
+        };
+        let state = self.sources.entry(key.to_owned()).or_default();
         let expired = state
             .last_active_msg
             .is_none_or(|t| now.duration_since(t) > self.cfg.active_ttl);
@@ -325,6 +346,23 @@ mod tests {
             Some(Alert::NewFire),
             "a second channel must not be rate-limited by the first"
         );
+    }
+
+    #[test]
+    fn source_map_is_bounded_and_overflow_still_alerts() {
+        let mut t = tracker();
+        let t0 = Instant::now();
+        // A hostile camera invents far more sources than the cap.
+        for i in 0..(FireTracker::MAX_SOURCES + 100) {
+            t.on_active(&format!("chan-{i}"), t0);
+        }
+        assert!(
+            t.sources.len() <= FireTracker::MAX_SOURCES + 1,
+            "tracked sources must stay bounded, got {}",
+            t.sources.len()
+        );
+        // Overflow sources still alert (rate-limited through one slot).
+        assert!(t.sources.contains_key("overflow"));
     }
 
     #[test]
