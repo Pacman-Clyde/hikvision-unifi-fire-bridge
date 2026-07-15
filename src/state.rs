@@ -43,6 +43,10 @@ pub struct TrackerConfig {
 #[derive(Debug, Default)]
 struct SourceState {
     active: bool,
+    /// An edge was detected but suppressed by the cooldown. It is carried
+    /// over and fires on a later `active` refresh once the cooldown has
+    /// expired — a rate-limited edge must be delayed, never lost.
+    pending_edge: bool,
     last_active_msg: Option<Instant>,
     last_alert: Option<Instant>,
 }
@@ -70,18 +74,22 @@ impl FireTracker {
         let was_active = state.active && !expired;
         state.active = true;
         state.last_active_msg = Some(now);
+        let cooldown_over = state
+            .last_alert
+            .is_none_or(|t| now.duration_since(t) >= self.cfg.cooldown);
 
-        if !was_active {
-            // Edge: a new fire (or one whose previous state expired).
-            if state
-                .last_alert
-                .is_none_or(|t| now.duration_since(t) >= self.cfg.cooldown)
-            {
+        if !was_active || state.pending_edge {
+            // Edge: a new fire (or one whose previous state expired), or a
+            // previously rate-limited edge still waiting to fire.
+            if cooldown_over {
+                state.pending_edge = false;
                 state.last_alert = Some(now);
                 return Some(Alert::NewFire);
             }
-            // Suppressed by cooldown. If re-alerting is enabled the next
-            // repeated `active` message will still get through below.
+            // Suppressed by the cooldown: remember the edge so it fires on a
+            // later `active` refresh instead of being lost. This matters in
+            // edge-only mode, where nothing else would ever retry it.
+            state.pending_edge = true;
             return None;
         }
 
@@ -96,7 +104,9 @@ impl FireTracker {
         None
     }
 
-    /// Handle an `inactive` notification for `source`.
+    /// Handle an `inactive` notification for `source`. A pending edge
+    /// deliberately survives: a fire that started and was rate-limited still
+    /// deserves its alert even if it went inactive in the meantime.
     pub fn on_inactive(&mut self, source: &str) {
         if let Some(state) = self.sources.get_mut(source) {
             state.active = false;
@@ -106,10 +116,13 @@ impl FireTracker {
     /// Called when the camera stream drops or reconnects. Any `inactive`
     /// notification may have been lost during the gap, so no source may stay
     /// latched active: the next `active` message is treated as an edge again
-    /// (still bounded by the cooldown, so a mid-fire reconnect cannot spam).
+    /// (still bounded by the cooldown, so a mid-fire reconnect cannot spam —
+    /// and if the cooldown suppresses it, the pending-edge carryover
+    /// guarantees it fires once the cooldown expires).
     pub fn on_stream_reset(&mut self) {
         for state in self.sources.values_mut() {
             state.active = false;
+            state.last_active_msg = None;
         }
     }
 }
@@ -208,14 +221,66 @@ mod tests {
         let t0 = Instant::now();
         assert_eq!(t.on_active("1", t0), Some(Alert::NewFire));
         t.on_inactive("1");
-        // New edge 10s later: rate-limited by cooldown.
+        // New edge 10s later: rate-limited by cooldown, carried as pending.
         assert_eq!(t.on_active("1", t0 + Duration::from_secs(10)), None);
-        // But the fire is still burning: repeated active messages re-alert
-        // once the re-alert interval from the last alert has elapsed.
+        // The pending edge fires as soon as an `active` refresh arrives past
+        // the cooldown — a rate-limited edge is delayed, never lost.
         assert_eq!(
-            t.on_active("1", t0 + REALERT),
-            Some(Alert::StillActive),
+            t.on_active("1", t0 + COOLDOWN),
+            Some(Alert::NewFire),
             "cooldown suppression must not silence an ongoing fire"
+        );
+    }
+
+    #[test]
+    fn suppressed_edge_is_carried_over_even_in_edge_only_mode() {
+        // The kimi-review CRITICAL scenario: edge-only mode, second fire
+        // starts within the cooldown, camera keeps refreshing `active` so the
+        // state never expires. Without carryover this fire is never alerted.
+        let mut t = edge_only();
+        let t0 = Instant::now();
+        assert_eq!(t.on_active("1", t0), Some(Alert::NewFire));
+        t.on_inactive("1");
+        // Second fire 10s later: suppressed by cooldown -> pending.
+        assert_eq!(t.on_active("1", t0 + Duration::from_secs(10)), None);
+        // Refreshes keep arriving inside the cooldown: still pending.
+        assert_eq!(t.on_active("1", t0 + Duration::from_secs(30)), None);
+        assert_eq!(t.on_active("1", t0 + Duration::from_secs(55)), None);
+        // First refresh past the cooldown: the pending edge must fire.
+        assert_eq!(
+            t.on_active("1", t0 + COOLDOWN),
+            Some(Alert::NewFire),
+            "a rate-limited edge must fire once the cooldown expires"
+        );
+        // And it fires exactly once.
+        assert_eq!(
+            t.on_active("1", t0 + COOLDOWN + Duration::from_secs(5)),
+            None
+        );
+    }
+
+    #[test]
+    fn reconnect_during_cooldown_cannot_silence_an_ongoing_fire() {
+        // Edge-only mode: fire alerts, stream drops 1s later, camera
+        // reconnects and keeps reporting `active` (fresh forever, so TTL
+        // never expires). The post-reconnect edge is inside the cooldown.
+        let mut t = edge_only();
+        let t0 = Instant::now();
+        assert_eq!(t.on_active("1", t0), Some(Alert::NewFire));
+        t.on_stream_reset();
+        assert_eq!(t.on_active("1", t0 + Duration::from_secs(5)), None);
+        // Refreshes every 10s keep the state fresh across the cooldown edge.
+        let mut now = t0 + Duration::from_secs(5);
+        let mut alerts = 0;
+        for _ in 0..12 {
+            now += Duration::from_secs(10);
+            if t.on_active("1", now).is_some() {
+                alerts += 1;
+            }
+        }
+        assert_eq!(
+            alerts, 1,
+            "the pending post-reconnect edge must fire exactly once after the cooldown"
         );
     }
 

@@ -26,23 +26,41 @@ pub struct WebhookConfig {
 /// Outcome carried into health state; the `String` is a sanitised message.
 pub type DeliveryResult = Result<(), String>;
 
-pub async fn deliver(client: &Client, cfg: &WebhookConfig, reason: &str) -> DeliveryResult {
+/// Deliver one alert. `alert` is the kind (`NewFire`/`StillActive`) and
+/// `source` the camera channel; both go into a small JSON payload — some
+/// Protect versions accept an empty POST, but a descriptive body is
+/// compatible either way and makes the trigger auditable on the Protect side.
+pub async fn deliver(
+    client: &Client,
+    cfg: &WebhookConfig,
+    alert: &str,
+    source: &str,
+) -> DeliveryResult {
+    let reason = format!("{alert} on source {source}");
+    let payload = serde_json::json!({
+        "service": "hikvision-unifi-fire-bridge",
+        "alert": alert,
+        "source": source,
+    })
+    .to_string();
     let mut last_error = String::new();
     for attempt in 1..=cfg.attempts {
         let request = client
             .post(cfg.url.clone())
             .header("X-API-Key", cfg.api_key.clone())
+            .header("Content-Type", "application/json")
+            .body(payload.clone())
             .send();
         match timeout(cfg.timeout, request).await {
             Ok(Ok(response)) if response.status().is_success() => {
-                info!(reason, attempt, status = %response.status(), "Protect webhook delivered");
+                info!(reason = %reason, attempt, status = %response.status(), "Protect webhook delivered");
                 return Ok(());
             }
             Ok(Ok(response)) => {
                 let status = response.status();
                 last_error = format!("Protect returned {status}");
                 if !is_retryable_status(status) {
-                    warn!(reason, attempt, %status, "permanent Protect error; not retrying");
+                    warn!(reason = %reason, attempt, %status, "permanent Protect error; not retrying");
                     return Err(last_error);
                 }
             }
@@ -57,7 +75,7 @@ pub async fn deliver(client: &Client, cfg: &WebhookConfig, reason: &str) -> Deli
             }
         }
         if attempt < cfg.attempts {
-            warn!(reason, attempt, error = %last_error, "Protect delivery attempt failed; retrying");
+            warn!(reason = %reason, attempt, error = %last_error, "Protect delivery attempt failed; retrying");
             sleep(Duration::from_secs(u64::from(attempt))).await;
         }
     }
@@ -131,7 +149,11 @@ mod tests {
     async fn first_attempt_success_delivers_once() {
         let (addr, hits) = start_server(vec![200]).await;
         let client = Client::new();
-        assert!(deliver(&client, &cfg(addr, 3), "test").await.is_ok());
+        assert!(
+            deliver(&client, &cfg(addr, 3), "NewFire", "1")
+                .await
+                .is_ok()
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 
@@ -139,7 +161,11 @@ mod tests {
     async fn server_error_is_retried_until_success() {
         let (addr, hits) = start_server(vec![500, 503, 200]).await;
         let client = Client::new();
-        assert!(deliver(&client, &cfg(addr, 3), "test").await.is_ok());
+        assert!(
+            deliver(&client, &cfg(addr, 3), "NewFire", "1")
+                .await
+                .is_ok()
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 3);
     }
 
@@ -147,7 +173,9 @@ mod tests {
     async fn permanent_forbidden_is_not_retried() {
         let (addr, hits) = start_server(vec![403]).await;
         let client = Client::new();
-        let err = deliver(&client, &cfg(addr, 3), "test").await.unwrap_err();
+        let err = deliver(&client, &cfg(addr, 3), "NewFire", "1")
+            .await
+            .unwrap_err();
         assert!(err.contains("403"), "err={err}");
         assert_eq!(hits.load(Ordering::SeqCst), 1, "403 must not be retried");
     }
@@ -156,7 +184,11 @@ mod tests {
     async fn too_many_requests_is_retried() {
         let (addr, hits) = start_server(vec![429, 200]).await;
         let client = Client::new();
-        assert!(deliver(&client, &cfg(addr, 3), "test").await.is_ok());
+        assert!(
+            deliver(&client, &cfg(addr, 3), "NewFire", "1")
+                .await
+                .is_ok()
+        );
         assert_eq!(hits.load(Ordering::SeqCst), 2);
     }
 
@@ -164,7 +196,9 @@ mod tests {
     async fn exhausted_attempts_report_sanitised_error() {
         let (addr, hits) = start_server(vec![500]).await;
         let client = Client::new();
-        let err = deliver(&client, &cfg(addr, 2), "test").await.unwrap_err();
+        let err = deliver(&client, &cfg(addr, 2), "NewFire", "1")
+            .await
+            .unwrap_err();
         assert_eq!(hits.load(Ordering::SeqCst), 2);
         assert!(err.contains("500"), "err={err}");
         assert!(
@@ -174,13 +208,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn payload_is_json_with_alert_and_source() {
+        let (body_tx, mut body_rx) = tokio::sync::mpsc::channel::<String>(1);
+        let app = Router::new().route(
+            "/hook",
+            post(move |body: String| {
+                let body_tx = body_tx.clone();
+                async move {
+                    body_tx.send(body).await.unwrap();
+                    StatusCode::OK
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let client = Client::new();
+        deliver(&client, &cfg(addr, 1), "StillActive", "7")
+            .await
+            .unwrap();
+        let body = body_rx.recv().await.unwrap();
+        let value: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["alert"], "StillActive");
+        assert_eq!(value["source"], "7");
+        assert_eq!(value["service"], "hikvision-unifi-fire-bridge");
+    }
+
+    #[tokio::test]
     async fn connection_refused_error_is_sanitised() {
         // Bind then drop a listener to get a port that refuses connections.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
         let client = Client::new();
-        let err = deliver(&client, &cfg(addr, 1), "test").await.unwrap_err();
+        let err = deliver(&client, &cfg(addr, 1), "NewFire", "1")
+            .await
+            .unwrap_err();
         assert!(
             !err.contains("/hook") && !err.contains(&addr.port().to_string()),
             "error must not leak the webhook URL: {err}"

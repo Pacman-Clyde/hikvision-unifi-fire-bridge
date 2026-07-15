@@ -58,10 +58,9 @@ fn healthcheck() -> Result<()> {
 
     let bind = std::env::var("HEALTH_BIND").unwrap_or_else(|_| "0.0.0.0:8080".into());
     let port = bind
-        .rsplit(':')
-        .next()
-        .and_then(|p| p.parse::<u16>().ok())
-        .context("HEALTH_BIND has no parsable port")?;
+        .parse::<std::net::SocketAddr>()
+        .context("HEALTH_BIND must be an address:port pair")?
+        .port();
 
     let addr = format!("127.0.0.1:{port}");
     let mut stream = TcpStream::connect_timeout(

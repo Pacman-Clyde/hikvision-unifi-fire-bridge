@@ -44,20 +44,27 @@ impl FrameExtractor {
     }
 
     /// Append a network chunk and return every complete XML document it
-    /// completes, in order. Returns an error if, after extraction, the
-    /// residual buffer exceeds the safety limit (a closing tag that never
-    /// arrives must not consume unbounded memory).
+    /// completes, in order. Returns an error if the residual buffer exceeds
+    /// the safety limit (a closing tag that never arrives must not consume
+    /// unbounded memory).
+    ///
+    /// The chunk is ingested in slices with extraction between them, so even
+    /// an adversarially large chunk cannot grow memory much past the limit
+    /// before the overflow trips.
     pub fn push(&mut self, chunk: &[u8]) -> Result<Vec<Vec<u8>>, BufferOverflow> {
-        self.buf.extend_from_slice(chunk);
+        const SLICE: usize = 64 * 1024;
         let mut frames = Vec::new();
-        while let Some(frame) = self.next_frame() {
-            frames.push(frame);
-        }
-        if self.buf.len() > self.max {
-            return Err(BufferOverflow {
-                buffered: self.buf.len(),
-                max: self.max,
-            });
+        for piece in chunk.chunks(SLICE) {
+            self.buf.extend_from_slice(piece);
+            while let Some(frame) = self.next_frame() {
+                frames.push(frame);
+            }
+            if self.buf.len() > self.max {
+                return Err(BufferOverflow {
+                    buffered: self.buf.len(),
+                    max: self.max,
+                });
+            }
         }
         Ok(frames)
     }

@@ -93,6 +93,12 @@ impl Config {
             bail!("HIKVISION_SCHEME must be http or https");
         }
         let hik_host = required("HIKVISION_HOST")?;
+        // A bare host or host:port only. Anything else (userinfo, path,
+        // query) would silently change the request target and could leak
+        // into error strings.
+        if hik_host.contains(['/', '@', '?', '#', '\\']) || hik_host.contains(char::is_whitespace) {
+            bail!("HIKVISION_HOST must be a bare host or host:port (no path, userinfo, or query)");
+        }
         let hik_url = Url::parse(&format!(
             "{scheme}://{hik_host}/ISAPI/Event/notification/alertStream"
         ))
@@ -137,6 +143,16 @@ impl Config {
             let value = seconds(name, default)?;
             Ok((!value.is_zero()).then_some(value))
         };
+        // Zero would make timeouts fire instantly and degenerate the state
+        // machine (TTL=0 turns every heartbeat into an "expired" edge;
+        // cooldown=0 removes all rate limiting). Fail fast instead.
+        let nonzero_seconds = |name: &str, default: u64| -> Result<Duration> {
+            let value = seconds(name, default)?;
+            if value.is_zero() {
+                bail!("{name} must be greater than zero");
+            }
+            Ok(value)
+        };
 
         let webhook_attempts: u32 = get("WEBHOOK_ATTEMPTS")
             .unwrap_or("3")
@@ -164,11 +180,11 @@ impl Config {
                 .parse()
                 .context("HEALTH_BIND must be an address:port pair")?,
             fire_matcher,
-            stream_idle: seconds("STREAM_IDLE_TIMEOUT_SECONDS", 90)?,
-            cooldown: seconds("FIRE_COOLDOWN_SECONDS", 60)?,
+            stream_idle: nonzero_seconds("STREAM_IDLE_TIMEOUT_SECONDS", 90)?,
+            cooldown: nonzero_seconds("FIRE_COOLDOWN_SECONDS", 60)?,
             realert: optional_seconds("FIRE_REALERT_SECONDS", 60)?,
-            active_ttl: seconds("FIRE_ACTIVE_TTL_SECONDS", 300)?,
-            webhook_timeout: seconds("WEBHOOK_TIMEOUT_SECONDS", 5)?,
+            active_ttl: nonzero_seconds("FIRE_ACTIVE_TTL_SECONDS", 300)?,
+            webhook_timeout: nonzero_seconds("WEBHOOK_TIMEOUT_SECONDS", 5)?,
             webhook_attempts,
             probe_interval: optional_seconds("PROTECT_PROBE_SECONDS", 60)?,
             reconnect_initial,
@@ -361,6 +377,42 @@ mod tests {
         assert!(matcher.matches("FIREALARM"));
         assert!(matcher.matches("fire_detection"));
         assert!(!matcher.matches("videoloss"));
+    }
+
+    #[test]
+    fn hikvision_host_rejects_userinfo_paths_and_queries() {
+        for bad in [
+            "user:pass@192.0.2.10",
+            "192.0.2.10/some/path",
+            "192.0.2.10?x=1",
+            "192.0.2.10#frag",
+            "host name",
+        ] {
+            let mut vars = base_vars();
+            vars.insert("HIKVISION_HOST".into(), bad.into());
+            assert!(Config::from_map(&vars).is_err(), "must reject {bad:?}");
+        }
+        // host:port and bracketed IPv6 remain valid.
+        for good in ["192.0.2.10:8080", "[fd00::1]:80", "camera.internal"] {
+            let mut vars = base_vars();
+            vars.insert("HIKVISION_HOST".into(), good.into());
+            assert!(Config::from_map(&vars).is_ok(), "must accept {good:?}");
+        }
+    }
+
+    #[test]
+    fn zero_valued_timeouts_and_windows_are_rejected() {
+        for name in [
+            "STREAM_IDLE_TIMEOUT_SECONDS",
+            "FIRE_COOLDOWN_SECONDS",
+            "FIRE_ACTIVE_TTL_SECONDS",
+            "WEBHOOK_TIMEOUT_SECONDS",
+        ] {
+            let mut vars = base_vars();
+            vars.insert(name.into(), "0".into());
+            let err = format!("{:#}", Config::from_map(&vars).unwrap_err());
+            assert!(err.contains(name), "{name}: err={err}");
+        }
     }
 
     #[test]

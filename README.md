@@ -22,7 +22,9 @@ Hikvision camera ──ISAPI alert stream──> bridge ──HTTPS webhook─�
   `inactive → active` edge, and by default **re-alert every 60 s while the
   fire stays active**. Active state expires if the camera goes quiet and is
   re-armed after every stream reconnect, so a lost `inactive` notification can
-  never latch the alarm off.
+  never latch the alarm off. An edge suppressed by the cooldown is carried
+  over and fires as soon as the cooldown expires — rate limiting delays an
+  alert, it never discards one.
 - **Proactive path monitoring.** A periodic probe verifies DNS, routing, and
   TLS toward the Protect host, so a broken webhook path turns `/readyz` red
   *before* a fire, not during one.
@@ -87,7 +89,7 @@ safety-related service.
 | Endpoint | Meaning |
 |---|---|
 | `GET /healthz` | Process liveness (also used by the container `HEALTHCHECK`) |
-| `GET /readyz` | `200` only when the camera stream is connected, the Protect probe passes, and the last alert delivery did not fail |
+| `GET /readyz` | `200` + `{"ready":true}` only when the camera stream is connected, the Protect probe passes, and the last alert delivery did not fail |
 | `GET /status` | Full diagnostic JSON: timestamps, reconnect/malformed/dropped counters, last errors (sanitised — no secrets, no URLs) |
 
 A **failed alert delivery latches `/readyz` unready** until a later delivery
