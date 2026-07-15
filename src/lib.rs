@@ -55,12 +55,18 @@ struct AlarmRequest {
 pub async fn run(cfg: Config, cancel: CancellationToken) -> Result<()> {
     let health = Health::new(cfg.probe_interval.is_some());
 
+    // Neither endpoint legitimately redirects, and following one would be
+    // dangerous: reqwest strips Authorization cross-host but forwards custom
+    // headers like X-API-Key to wherever a 3xx points, and a compromised
+    // camera could use a redirect as an SSRF pivot into the local network.
     let hik_client = Client::builder()
         .connect_timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building camera HTTP client")?;
     let protect_client = Client::builder()
         .connect_timeout(Duration::from_secs(5))
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building Protect HTTP client")?;
 

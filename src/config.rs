@@ -50,7 +50,7 @@ impl Default for FireMatcher {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Config {
     pub hik_url: Url,
     pub hik_user: String,
@@ -70,6 +70,34 @@ pub struct Config {
     pub probe_interval: Option<Duration>,
     pub reconnect_initial: Duration,
     pub reconnect_max: Duration,
+}
+
+/// Hand-written so an incidental `{:?}` (debug log, panic context, `dbg!`)
+/// can never print the camera password. The API key is additionally marked
+/// sensitive at construction, so `HeaderValue`'s own Debug prints
+/// `Sensitive` instead of the value.
+impl std::fmt::Debug for Config {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Config")
+            .field("hik_url", &self.hik_url.as_str())
+            .field("hik_user", &self.hik_user)
+            .field("hik_pass", &"<redacted>")
+            .field("webhook_url", &"<redacted>")
+            .field("api_key", &self.api_key)
+            .field("probe_url", &self.probe_url.as_str())
+            .field("health_bind", &self.health_bind)
+            .field("fire_matcher", &self.fire_matcher)
+            .field("stream_idle", &self.stream_idle)
+            .field("cooldown", &self.cooldown)
+            .field("realert", &self.realert)
+            .field("active_ttl", &self.active_ttl)
+            .field("webhook_timeout", &self.webhook_timeout)
+            .field("webhook_attempts", &self.webhook_attempts)
+            .field("probe_interval", &self.probe_interval)
+            .field("reconnect_initial", &self.reconnect_initial)
+            .field("reconnect_max", &self.reconnect_max)
+            .finish()
+    }
 }
 
 impl Config {
@@ -137,8 +165,11 @@ impl Config {
         };
         require_https_or_loopback(&probe_url, "Protect probe URL")?;
 
-        let api_key = HeaderValue::from_str(&required("PROTECT_API_KEY")?)
+        let mut api_key = HeaderValue::from_str(&required("PROTECT_API_KEY")?)
             .context("PROTECT_API_KEY contains characters not permitted in an HTTP header")?;
+        // Debug-formatting a sensitive HeaderValue prints `Sensitive`, not
+        // the key.
+        api_key.set_sensitive(true);
 
         let fire_matcher = match get("FIRE_EVENT_TYPES").filter(|v| !v.is_empty()) {
             Some(csv) => FireMatcher::from_csv(csv)?,
@@ -431,6 +462,19 @@ mod tests {
             let err = format!("{:#}", Config::from_map(&vars).unwrap_err());
             assert!(err.contains(name), "{name}: err={err}");
         }
+    }
+
+    #[test]
+    fn debug_format_never_prints_secrets() {
+        let mut vars = base_vars();
+        vars.insert("HIKVISION_PASS".into(), "super-secret-pw".into());
+        vars.insert("PROTECT_API_KEY".into(), "super-secret-key".into());
+        vars.insert("PROTECT_WEBHOOK_ID".into(), "secret-hook-id".into());
+        let cfg = Config::from_map(&vars).unwrap();
+        let dump = format!("{cfg:?}");
+        assert!(!dump.contains("super-secret-pw"), "dump={dump}");
+        assert!(!dump.contains("super-secret-key"), "dump={dump}");
+        assert!(!dump.contains("secret-hook-id"), "dump={dump}");
     }
 
     #[test]
