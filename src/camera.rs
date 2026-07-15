@@ -55,7 +55,12 @@ pub async fn supervisor(
         }
         let started = Instant::now();
         let result = session(&cfg, &client, &auth, &tx, &health, &cancel).await;
-        let error = result.as_ref().err().map(|e| format!("{e:#}"));
+        // reqwest/diqwest error chains embed the full request URL; redact the
+        // camera address before the string reaches logs or /status.
+        let error = result
+            .as_ref()
+            .err()
+            .map(|e| redact(&format!("{e:#}"), &cfg));
         health.camera_disconnected(error.clone()).await;
         if cancel.is_cancelled() {
             return;
@@ -134,6 +139,15 @@ async fn session(
     }
 }
 
+/// Replace the camera URL and host with placeholders in an error string.
+fn redact(message: &str, cfg: &Config) -> String {
+    let mut out = message.replace(cfg.hik_url.as_str(), "<camera>");
+    if let Some(host) = cfg.hik_url.host_str() {
+        out = out.replace(host, "<camera-host>");
+    }
+    out
+}
+
 /// Forward with a bounded wait. Dropping an event is recorded and logged but
 /// must never kill the stream: with re-alerting enabled the camera's repeated
 /// `active` notifications make delivery self-healing.
@@ -144,5 +158,37 @@ async fn forward(tx: &mpsc::Sender<StreamItem>, event: CameraEvent, health: &Hea
             health.dropped_event().await;
             warn!("event queue full; dropped a camera event");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use std::collections::HashMap;
+
+    #[test]
+    fn redact_removes_camera_url_and_host_from_errors() {
+        let vars: HashMap<String, String> = [
+            ("HIKVISION_HOST", "192.0.2.99:8000"),
+            ("HIKVISION_USER", "hik-operator"),
+            ("HIKVISION_PASS", "pw"),
+            ("PROTECT_BASE_URL", "https://protect.example.com"),
+            ("PROTECT_WEBHOOK_ID", "abc"),
+            ("PROTECT_API_KEY", "key"),
+        ]
+        .into_iter()
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+        let cfg = Config::from_map(&vars).unwrap();
+
+        let raw = format!(
+            "error sending request for url ({}): connection refused",
+            cfg.hik_url
+        );
+        let cleaned = redact(&raw, &cfg);
+        assert!(!cleaned.contains("192.0.2.99"), "cleaned={cleaned}");
+        assert!(!cleaned.contains("alertStream"), "cleaned={cleaned}");
+        assert!(cleaned.contains("connection refused"));
     }
 }

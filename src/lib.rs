@@ -170,16 +170,22 @@ async fn process_events(
                 match event.state {
                     EventState::Active => {
                         if let Some(alert) = tracker.on_active(&source, Instant::now()) {
-                            health.alert_sent().await;
                             info!(%source, ?alert, event_type = %event.event_type, "fire alert raised");
                             let request = AlarmRequest { source, alert };
                             match timeout(Duration::from_secs(2), alarm_tx.send(request)).await {
-                                Ok(Ok(())) => {}
+                                Ok(Ok(())) => health.alert_sent().await,
                                 Ok(Err(_)) | Err(_) => {
                                     // The worker is wedged or the queue is
-                                    // full. Do not crash the daemon: repeated
-                                    // `active` notifications will re-raise.
+                                    // full. Do not crash the daemon (repeated
+                                    // `active` notifications will re-raise),
+                                    // but a lost alert must latch /readyz
+                                    // unready — this is a delivery failure.
                                     health.dropped_event().await;
+                                    health
+                                        .webhook_failure(
+                                            "alarm queue unavailable; alert not enqueued".into(),
+                                        )
+                                        .await;
                                     error!("alarm queue unavailable; alert not enqueued");
                                 }
                             }
@@ -211,8 +217,11 @@ async fn webhook_worker(
                 None => return,
             },
         };
-        let reason = format!("{:?} on source {}", request.alert, request.source);
-        match webhook::deliver(&client, &cfg, &reason).await {
+        let alert = match request.alert {
+            Alert::NewFire => "NewFire",
+            Alert::StillActive => "StillActive",
+        };
+        match webhook::deliver(&client, &cfg, alert, &request.source).await {
             Ok(()) => health.webhook_success().await,
             Err(message) => {
                 error!(error = %message, "Protect delivery failed after all attempts");

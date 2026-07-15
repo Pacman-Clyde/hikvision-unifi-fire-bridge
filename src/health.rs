@@ -36,6 +36,7 @@ pub struct HealthSnapshot {
     pub alerts_sent: u64,
     pub last_alert_unix: Option<u64>,
     // Protect delivery path.
+    pub webhook_successes: u64,
     pub webhook_last_success_unix: Option<u64>,
     pub webhook_failures: u64,
     pub webhook_error: Option<String>,
@@ -113,6 +114,7 @@ impl Health {
 
     pub async fn webhook_success(&self) {
         let mut s = self.inner.write().await;
+        s.webhook_successes += 1;
         s.webhook_last_success_unix = Some(unix_now());
         s.webhook_error = None;
     }
@@ -152,14 +154,21 @@ pub async fn serve(bind: SocketAddr, health: Health, cancel: CancellationToken) 
     Ok(())
 }
 
+/// Minimal readiness body; the full snapshot stays on `/status` so a
+/// monitoring-only network sees no more than it needs.
+#[derive(Serialize)]
+struct ReadyBody {
+    ready: bool,
+}
+
 async fn readiness(State(health): State<Health>) -> impl IntoResponse {
-    let snapshot = health.snapshot().await;
-    let code = if snapshot.ready() {
+    let ready = health.snapshot().await.ready();
+    let code = if ready {
         StatusCode::OK
     } else {
         StatusCode::SERVICE_UNAVAILABLE
     };
-    (code, Json(snapshot))
+    (code, Json(ReadyBody { ready }))
 }
 
 async fn status(State(health): State<Health>) -> Json<HealthSnapshot> {
