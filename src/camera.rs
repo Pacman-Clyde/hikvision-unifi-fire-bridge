@@ -155,7 +155,7 @@ async fn forward(tx: &mpsc::Sender<StreamItem>, event: CameraEvent, health: &Hea
     match timeout(SEND_TIMEOUT, tx.send(StreamItem::Event(event))).await {
         Ok(Ok(())) => {}
         Ok(Err(_)) | Err(_) => {
-            health.dropped_event().await;
+            health.camera_event_dropped().await;
             warn!("event queue full; dropped a camera event");
         }
     }

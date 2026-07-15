@@ -33,18 +33,21 @@ fn serve() -> Result<()> {
 }
 
 /// Cancel on SIGINT (interactive) or SIGTERM (container runtime `stop`).
+/// If the SIGTERM handler cannot be installed, SIGINT handling must survive.
 async fn shutdown_signal(cancel: CancellationToken) {
     use tokio::signal::unix::{SignalKind, signal};
-    let mut sigterm = match signal(SignalKind::terminate()) {
-        Ok(sigterm) => sigterm,
-        Err(e) => {
-            tracing::error!(error = %e, "cannot install SIGTERM handler");
-            return;
+    match signal(SignalKind::terminate()) {
+        Ok(mut sigterm) => {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => info!("SIGINT received; shutting down"),
+                _ = sigterm.recv() => info!("SIGTERM received; shutting down"),
+            }
         }
-    };
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => info!("SIGINT received; shutting down"),
-        _ = sigterm.recv() => info!("SIGTERM received; shutting down"),
+        Err(e) => {
+            tracing::error!(error = %e, "cannot install SIGTERM handler; SIGINT only");
+            let _ = tokio::signal::ctrl_c().await;
+            info!("SIGINT received; shutting down");
+        }
     }
     cancel.cancel();
 }
@@ -75,8 +78,9 @@ fn healthcheck() -> Result<()> {
     let mut response = String::new();
     stream.read_to_string(&mut response)?;
     let status_line = response.lines().next().unwrap_or_default();
+    let status_code = status_line.split_whitespace().nth(1).unwrap_or_default();
     anyhow::ensure!(
-        status_line.contains(" 200 "),
+        status_code == "200",
         "unexpected health response: {status_line}"
     );
     Ok(())

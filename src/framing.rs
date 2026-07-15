@@ -70,25 +70,39 @@ impl FrameExtractor {
     }
 
     fn next_frame(&mut self) -> Option<Vec<u8>> {
-        let start = match find(&self.buf, OPEN_TAG) {
-            Some(start) => start,
-            None => {
-                // No opening tag: discard noise (multipart boundaries, part
-                // headers) but keep enough tail bytes to recognise an opening
-                // tag split across chunks.
-                let retain = OPEN_TAG.len() - 1;
-                if self.buf.len() > retain {
-                    let discard = self.buf.len() - retain;
-                    self.buf.advance(discard);
+        loop {
+            let start = match find(&self.buf, OPEN_TAG) {
+                Some(start) => start,
+                None => {
+                    // No opening tag: discard noise (multipart boundaries,
+                    // part headers) but keep enough tail bytes to recognise
+                    // an opening tag split across chunks.
+                    let retain = OPEN_TAG.len() - 1;
+                    if self.buf.len() > retain {
+                        let discard = self.buf.len() - retain;
+                        self.buf.advance(discard);
+                    }
+                    return None;
                 }
-                return None;
+            };
+            if start > 0 {
+                self.buf.advance(start);
             }
-        };
-        if start > 0 {
-            self.buf.advance(start);
+            // The match is a prefix; require a tag delimiter after it so a
+            // longer element name (e.g. `<EventNotificationAlertList>`)
+            // cannot be mistaken for our document root and wedge the framer
+            // hunting for a close tag that never comes.
+            match self.buf.get(OPEN_TAG.len()) {
+                None => return None, // need more bytes to see the delimiter
+                Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\r') | Some(b'\n') | Some(b'/') => {}
+                Some(_) => {
+                    self.buf.advance(1);
+                    continue;
+                }
+            }
+            let end = find(&self.buf, CLOSE_TAG)?;
+            return Some(self.buf.split_to(end + CLOSE_TAG.len()).to_vec());
         }
-        let end = find(&self.buf, CLOSE_TAG)?;
-        Some(self.buf.split_to(end + CLOSE_TAG.len()).to_vec())
     }
 }
 
@@ -178,6 +192,18 @@ mod tests {
             .push(&[b'x'; 128])
             .expect_err("an unterminated document must trip the safety limit");
         assert!(err.buffered > err.max);
+    }
+
+    #[test]
+    fn longer_element_names_do_not_wedge_the_extractor() {
+        // `<EventNotificationAlertList>` shares our open tag as a prefix; the
+        // extractor must skip it and still find the real document inside.
+        let mut input = Vec::new();
+        input.extend_from_slice(b"<EventNotificationAlertList>");
+        input.extend_from_slice(DOC);
+        input.extend_from_slice(b"</EventNotificationAlertList>");
+        let frames = extractor().push(&input).unwrap();
+        assert_eq!(frames, vec![DOC.to_vec()]);
     }
 
     #[test]
