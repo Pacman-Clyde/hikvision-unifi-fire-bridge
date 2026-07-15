@@ -1,0 +1,7 @@
+/target
+/deprecated
+/local
+.env
+.env.*
+*.pem
+*.key
