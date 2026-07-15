@@ -103,9 +103,22 @@ fn assign(
     match element {
         b"eventType" if event_type.is_none() => *event_type = Some(value),
         b"eventState" if event_state.is_none() => *event_state = Some(value),
-        b"channelID" | b"dynChannelID" if channel.is_none() => *channel = Some(value),
+        b"channelID" | b"dynChannelID" if channel.is_none() => {
+            *channel = Some(sanitize_channel(&value))
+        }
         _ => {}
     }
+}
+
+/// The channel value is attacker-influenced (a compromised camera chooses
+/// it) and flows into structured logs and the webhook payload. Strip control
+/// characters (log forging via embedded newlines/escapes) and cap the length.
+fn sanitize_channel(raw: &str) -> String {
+    raw.trim()
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(64)
+        .collect()
 }
 
 /// Strip any namespace prefix: `ns:eventType` -> `eventType`.
@@ -221,6 +234,24 @@ mod tests {
     #[test]
     fn malformed_xml_is_an_error_not_a_panic() {
         assert!(parse_event(b"<EventNotificationAlert><event").is_err());
+    }
+
+    #[test]
+    fn channel_is_sanitised_against_log_forging() {
+        let event = parse_event(
+            b"<EventNotificationAlert>\
+                <eventType>fireDetection</eventType>\
+                <eventState>active</eventState>\
+                <channelID>1\x1b[31m\nFAKE LOG LINE</channelID>\
+            </EventNotificationAlert>",
+        )
+        .unwrap()
+        .unwrap();
+        let channel = event.channel.unwrap();
+        assert!(!channel.contains('\n'), "channel={channel:?}");
+        assert!(!channel.contains('\x1b'), "channel={channel:?}");
+        assert!(channel.starts_with('1'));
+        assert!(channel.len() <= 64);
     }
 
     #[test]

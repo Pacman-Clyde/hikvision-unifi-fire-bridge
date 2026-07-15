@@ -15,12 +15,24 @@ use reqwest::{Client, StatusCode, Url};
 use tokio::time::{sleep, timeout};
 use tracing::{info, warn};
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct WebhookConfig {
     pub url: Url,
     pub api_key: HeaderValue,
     pub timeout: Duration,
     pub attempts: u32,
+}
+
+/// Hand-written: the URL embeds the webhook ID and must never reach logs.
+impl std::fmt::Debug for WebhookConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("WebhookConfig")
+            .field("url", &"<redacted>")
+            .field("api_key", &self.api_key)
+            .field("timeout", &self.timeout)
+            .field("attempts", &self.attempts)
+            .finish()
+    }
 }
 
 /// Outcome carried into health state; the `String` is a sanitised message.
