@@ -54,6 +54,10 @@ docker run -d \
   ghcr.io/gasmanc/hikvision-unifi-fire-bridge:0.1.0
 ```
 
+Images are published for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5
+and other SBCs) under the same tag — Docker pulls the right one for your
+platform automatically.
+
 Pin a version tag or digest; do not auto-deploy `latest` for a
 safety-related service.
 
