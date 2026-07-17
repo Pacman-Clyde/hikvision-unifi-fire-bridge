@@ -171,7 +171,7 @@ mod tests {
     fn redact_removes_camera_url_and_host_from_errors() {
         let vars: HashMap<String, String> = [
             ("HIKVISION_HOST", "192.0.2.99:8000"),
-            ("HIKVISION_USER", "fire-bridge"),
+            ("HIKVISION_USER", "hik-operator"),
             ("HIKVISION_PASS", "pw"),
             ("PROTECT_BASE_URL", "https://protect.example.com"),
             ("PROTECT_WEBHOOK_ID", "abc"),

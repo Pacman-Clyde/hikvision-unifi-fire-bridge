@@ -52,7 +52,7 @@ async fn camera_handler(State(state): State<CameraState>, headers: HeaderMap) ->
         Some(value) => {
             let value = value.to_str().unwrap_or_default();
             assert!(
-                value.starts_with("Digest") && value.contains(r#"username="fire-bridge""#),
+                value.starts_with("Digest") && value.contains(r#"username="hik-operator""#),
                 "camera must receive a Digest authorization, got: {value}"
             );
             state.authorized.fetch_add(1, Ordering::SeqCst);
@@ -118,7 +118,7 @@ async fn start_harness(configure: impl FnOnce(&mut Config)) -> Harness {
             "http://{camera_addr}/ISAPI/Event/notification/alertStream"
         ))
         .unwrap(),
-        hik_user: "fire-bridge".into(),
+        hik_user: "hik-operator".into(),
         hik_pass: "e2e-password".into(),
         webhook_url: Url::parse(&format!("http://{protect_addr}/hook/test-webhook")).unwrap(),
         api_key: HeaderValue::from_static(API_KEY),
@@ -327,7 +327,7 @@ async fn config_from_map_to_running_bridge() {
 
     let vars: std::collections::HashMap<String, String> = [
         ("HIKVISION_HOST".to_owned(), camera_addr.to_string()),
-        ("HIKVISION_USER".to_owned(), "fire-bridge".to_owned()),
+        ("HIKVISION_USER".to_owned(), "hik-operator".to_owned()),
         ("HIKVISION_PASS".to_owned(), "e2e-password".to_owned()),
         (
             "PROTECT_WEBHOOK_URL".to_owned(),

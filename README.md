@@ -46,7 +46,7 @@ docker run -d \
   --read-only --cap-drop ALL --security-opt no-new-privileges:true \
   -p 8080:8080 \
   -e HIKVISION_HOST=192.168.x.x \
-  -e HIKVISION_USER=fire-bridge \
+  -e HIKVISION_USER=hik-operator \
   -e HIKVISION_PASS='...' \
   -e PROTECT_BASE_URL=https://your-unvr-hostname \
   -e PROTECT_WEBHOOK_ID='...' \
@@ -73,7 +73,7 @@ safety-related service.
 | `PROTECT_WEBHOOK_ID` | Yes* | — | Alarm Manager incoming-webhook ID |
 | `PROTECT_WEBHOOK_URL` | No | — | Full webhook URL override; replaces `PROTECT_BASE_URL` + `PROTECT_WEBHOOK_ID` if your Protect version uses a different path |
 | `PROTECT_API_KEY` | Yes | — | Protect integration API key (sent as `X-API-Key`) |
-| `FIRE_EVENT_TYPES` | No | `fireDetection,fire_detection,fireAlarm` | Comma-separated `eventType` values treated as fire (case-insensitive) |
+| `FIRE_EVENT_TYPES` | No | `TMA,fireDetection,fire_detection,fireAlarm` | Comma-separated `eventType` values treated as fire (case-insensitive) |
 | `FIRE_COOLDOWN_SECONDS` | No | `60` | Minimum gap between edge-trigger alerts per source |
 | `FIRE_REALERT_SECONDS` | No | `60` | Re-alert interval while a fire stays active; `0` disables re-alerting |
 | `FIRE_ACTIVE_TTL_SECONDS` | No | `300` | Active state expires after this silence (anti-latch safety) |
@@ -101,12 +101,35 @@ succeeds. That is deliberate: a missed alarm needs a human. Monitor `/readyz`
 with something independent of UniFi (e.g. Uptime Kuma) — Protect cannot report
 the failure of the path used to reach Protect.
 
+## Temperature Measurement Alarm (TMA) — recommended primary trigger
+
+Hikvision thermal cameras emit a `TMA` (Temperature Measurement Alarm) event on
+the ISAPI stream when a measured temperature crosses a **thermometry rule** you
+configure on the camera. Because it triggers on heat crossing a threshold — not
+on visible flame — TMA generally alarms **earlier** than the AI `fireDetection`
+event, which is why `TMA` is included in the `FIRE_EVENT_TYPES` defaults.
+
+To use it:
+
+1. On the camera, enable **Temperature Measurement / Thermography**.
+2. Add a rule (point or region) with an **alarm threshold** appropriate for
+   fire — a temperature well above anything normal for that scene.
+3. Set the rule's **linkage** to raise a notification so it appears on the
+   alert stream.
+4. Confirm the exact `eventType` your firmware sends (see below) — some
+   firmwares label it `TMA`, others `thermometryAlarm`. Add whatever you see to
+   `FIRE_EVENT_TYPES`.
+
+> **Caveat:** if you also run thermography for non-fire purposes, a TMA raised
+> by an unrelated rule will trigger an alert too. Scope the camera's rules to
+> fire, or narrow `FIRE_EVENT_TYPES` accordingly.
+
 ## Finding your camera's event type
 
 Firmwares differ. Capture a test event and check the `eventType`:
 
 ```bash
-curl --digest --user 'fire-bridge:PASSWORD' --no-buffer \
+curl --digest --user 'hik-operator:PASSWORD' --no-buffer \
   'http://CAMERA/ISAPI/Event/notification/alertStream'
 ```
 

@@ -22,7 +22,7 @@ pub struct FireMatcher {
 }
 
 impl FireMatcher {
-    pub const DEFAULT_TYPES: &[&str] = &["firedetection", "fire_detection", "firealarm"];
+    pub const DEFAULT_TYPES: &[&str] = &["tma", "firedetection", "fire_detection", "firealarm"];
 
     fn from_csv(csv: &str) -> Result<Self> {
         let types: Vec<String> = csv
@@ -273,7 +273,7 @@ mod tests {
     fn base_vars() -> HashMap<String, String> {
         [
             ("HIKVISION_HOST", "192.0.2.10"),
-            ("HIKVISION_USER", "fire-bridge"),
+            ("HIKVISION_USER", "hik-operator"),
             ("HIKVISION_PASS", "secret"),
             ("PROTECT_BASE_URL", "https://protect.example.com"),
             ("PROTECT_WEBHOOK_ID", "abc123"),
@@ -422,6 +422,7 @@ mod tests {
     #[test]
     fn default_fire_matcher_covers_known_hikvision_types() {
         let matcher = FireMatcher::default();
+        assert!(matcher.matches("TMA"));
         assert!(matcher.matches("fireDetection"));
         assert!(matcher.matches("FIREALARM"));
         assert!(matcher.matches("fire_detection"));
