@@ -27,7 +27,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 LABEL org.opencontainers.image.title="hikvision-unifi-fire-bridge" \
       org.opencontainers.image.description="Bridge Hikvision ISAPI fire events into UniFi Protect Alarm Manager" \
-      org.opencontainers.image.source="https://github.com/Gasmanc/hikvision-unifi-fire-bridge" \
+      org.opencontainers.image.source="https://github.com/Pacman-Clyde/hikvision-unifi-fire-bridge" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later"
 
 ENTRYPOINT ["/usr/local/bin/hikvision-unifi-fire-bridge"]
