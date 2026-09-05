@@ -49,7 +49,7 @@ jobs:
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
           # GHCR requires lowercase; github.repository preserves owner casing.
-          images: ghcr.io/gasmanc/hikvision-unifi-fire-bridge
+          images: ghcr.io/pacman-clyde/hikvision-unifi-fire-bridge
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
