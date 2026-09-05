@@ -5,7 +5,7 @@ edition = "2024"
 rust-version = "1.97"
 license = "AGPL-3.0-or-later"
 description = "Bridge Hikvision ISAPI fire-detection events into UniFi Protect Alarm Manager webhooks"
-repository = "https://github.com/Gasmanc/hikvision-unifi-fire-bridge"
+repository = "https://github.com/Pacman-Clyde/hikvision-unifi-fire-bridge"
 keywords = ["hikvision", "unifi", "protect", "fire", "isapi"]
 categories = ["network-programming"]
 
