@@ -51,7 +51,7 @@ docker run -d \
   -e PROTECT_BASE_URL=https://your-unvr-hostname \
   -e PROTECT_WEBHOOK_ID='...' \
   -e PROTECT_API_KEY='...' \
-  ghcr.io/gasmanc/hikvision-unifi-fire-bridge:0.1.0
+  ghcr.io/pacman-clyde/hikvision-unifi-fire-bridge:0.1.0
 ```
 
 Images are published for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5
@@ -162,7 +162,7 @@ cargo test            # unit + end-to-end tests (fake camera & Protect servers)
 ```
 
 Releases are tagged `vX.Y.Z`; CI builds and publishes the container image to
-`ghcr.io/gasmanc/hikvision-unifi-fire-bridge`.
+`ghcr.io/pacman-clyde/hikvision-unifi-fire-bridge`.
 
 ## Security
 
