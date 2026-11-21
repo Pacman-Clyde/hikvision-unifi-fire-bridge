@@ -15,7 +15,7 @@ env:
 jobs:
   verify:
     name: Verify before publish
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, unraid]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: dtolnay/rust-toolchain@fa04a1451ff1842e2626ccb99004d0195b455a88 # master
@@ -33,7 +33,7 @@ jobs:
   publish:
     name: Build and publish image to GHCR
     needs: verify
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, unraid-vm]
     steps:
       - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
       - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
